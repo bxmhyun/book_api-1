@@ -1,69 +1,104 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS, cross_origin
+from flask_cors import CORS
+from pymongo import MongoClient
+from flask_basicauth import BasicAuth
+from dotenv import load_dotenv
+import os
 
-# Sample data (in-memory database for simplicity)
-books = [
-    {"id": 1, "title": "The Let Them Theory: A Life-Changing Tool That Millions of People Can't Stop Talking About", "author": "Mel Robbins", "image_url": "https://images-na.ssl-images-amazon.com/images/I/91I1KDnK1kL._AC_UL381_SR381,381_.jpg"},
-    {"id": 2, "title": "Forgotten Home Apothecary : 250 Powerful Remedies at Your Fingertips", "author": "Dr. Nicole Apelian", "image_url": "https://images-na.ssl-images-amazon.com/images/I/91-E86oM2IL._AC_UL381_SR381,381_.jpg"},
-    {"id": 3, "title": "Seven Things You Can't Say About China", "author": "Tom Cotton", "image_url": "https://images-na.ssl-images-amazon.com/images/I/81+mN748qkL._AC_UL381_SR381,381_.jpg"},
-    {"id": 4, "title": "Atomic Habits: An Easy & Proven Way to Build Good Habits & Break Bad Ones", "author" : "James Clear", "image_url": "https://images-na.ssl-images-amazon.com/images/I/81ANaVZk5LL._AC_UL381_SR381,381_.jpg"}
-]
+load_dotenv()
+
+# เชื่อมต่อกับ MongoDB Atlas
+MONGO_URI = os.getenv('MONGO_URI')
+client = MongoClient(MONGO_URI)
+
+# เลือก Database และ Collection
+db = client["bookstore"]
+books_collection = db["books"]
 
 app = Flask(__name__)
 CORS(app)
-app.config['CORS_HEADERS']='Content-Type'
+
+app.config['BASIC_AUTH_USERNAME'] = 'Username'   # ตั้งค่า Username
+app.config['BASIC_AUTH_PASSWORD'] = 'password'  # ตั้งค่า Password
+
+basic_auth = BasicAuth(app)
 
 @app.route("/")
 def hello_world():
     return "<p>Hello, World!</p>"
 
-# Create (POST) operation
+# Create (POST) 
 @app.route('/books', methods=['POST'])
+@basic_auth.required
 def create_book():
-    data = request.get_json()
-
-    new_book = {
-        "id": len(books) + 1,
-        "title": data["title"],
-        "author": data["author"],
-        "image_url": data["image_url"]
-    }
-
-    books.append(new_book)
-    return jsonify(new_book), 201
-
-# Read (GET) operation - Get all books
-@app.route('/books', methods=['GET'])
-@cross_origin()
-def get_all_books():
-    return jsonify({"books": books})
-
-# Read (GET) operation - Get a specific book by ID
-@app.route('/books/<int:book_id>', methods=['GET'])
-def get_book(book_id):
-    book = next((b for b in books if b["id"] == book_id), None)
-    if book:
-        return jsonify(book)
-    else:
-        return jsonify({"error": "Book not found"}), 404
-
-# Update (PUT) operation
-@app.route('/books/<int:book_id>', methods=['PUT'])
-def update_book(book_id):
-    book = next((b for b in books if b["id"] == book_id), None)
-    if book:
+    try:
         data = request.get_json()
-        book.update(data)
-        return jsonify(book)
-    else:
-        return jsonify({"error": "Book not found"}), 404
-    
-# Delete operation
-@app.route('/books/<int:book_id>', methods=['DELETE'])
-def delete_book(book_id):
-    global books
-    books = [b for b in books if b["id"] != book_id]
-    return jsonify({"message": "Book deleted successfully"})
+        if not data:
+            return jsonify({"error": "Invalid JSON data"}), 400
+        
+        new_book = {
+            "title": data.get("title", ""),
+            "author": data.get("author", ""),
+            "image_url": data.get("image_url", "")
+        }
+
+        # record on MongoDB
+        result = books_collection.insert_one(new_book)
+        new_book["_id"] = str(result.inserted_id)  # convert ObjectId to string
+
+        return jsonify(new_book), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Read (GET) 
+@app.route('/books', methods=['GET'])
+@basic_auth.required
+def get_all_books():
+    try:
+        books = list(books_collection.find({}, {"_id": 0})) 
+        return jsonify({"books": books})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Read (GET) 
+@app.route('/books/<title>', methods=['GET'])
+@basic_auth.required
+def get_book(title):
+    try:
+        book = books_collection.find_one({"title": title}, {"_id": 0})
+        if book:
+            return jsonify(book)
+        else:
+            return jsonify({"error": "Book not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# update (PUT) 
+@app.route('/books/<title>', methods=['PUT'])
+@basic_auth.required
+def update_book(title):
+    try:
+        data = request.get_json()
+        result = books_collection.update_one({"title": title}, {"$set": data})
+        if result.modified_count > 0:
+            return jsonify({"message": "Book updated successfully"})
+        else:
+            return jsonify({"error": "Book not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Delete (DELETE) 
+@app.route('/books/<title>', methods=['DELETE'])
+@basic_auth.required
+def delete_book(title):
+    try:
+        result = books_collection.delete_one({"title": title})
+        if result.deleted_count > 0:
+            return jsonify({"message": "Book deleted successfully"})
+        else:
+            return jsonify({"error": "Book not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5001, debug=True)
